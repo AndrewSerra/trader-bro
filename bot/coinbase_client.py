@@ -1,4 +1,3 @@
-import base64
 import os
 import secrets
 import time
@@ -6,35 +5,34 @@ import uuid
 
 import jwt
 import requests
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 HOST = "api.coinbase.com"
 BASE_URL = f"https://{HOST}"
 
 
-def _load_key() -> tuple[str, Ed25519PrivateKey]:
-    key_id = os.environ["COINBASE_API_KEY"]
-    raw = base64.b64decode(os.environ["COINBASE_API_SECRET"])
-    # CDP exports 64 bytes (seed + public key) or 32 bytes (seed only)
-    private_key = Ed25519PrivateKey.from_private_bytes(raw[:32])
-    return key_id, private_key
+def _load_key():
+    key_name = os.environ["COINBASE_API_KEY"]
+    # Secret is a PEM EC private key; .env may encode newlines as literal \n
+    pem = os.environ["COINBASE_API_SECRET"].replace("\\n", "\n").encode()
+    private_key = load_pem_private_key(pem, password=None)
+    return key_name, private_key
 
 
 def _build_jwt(method: str, path: str) -> str:
-    key_id, private_key = _load_key()
+    key_name, private_key = _load_key()
     now = int(time.time())
     token = jwt.encode(
         {
-            "sub": key_id,
+            "sub": key_name,
             "iss": "cdp",
-            "aud": ["cdp_service"],
             "nbf": now,
             "exp": now + 120,
             "uri": f"{method.upper()} {HOST}{path}",
         },
         private_key,
-        algorithm="EdDSA",
-        headers={"kid": key_id, "nonce": secrets.token_hex(16)},
+        algorithm="ES256",
+        headers={"kid": key_name, "nonce": secrets.token_hex(16)},
     )
     return token
 

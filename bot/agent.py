@@ -14,7 +14,7 @@ from bot.coinbase_client import (
 from bot.database import save_decision
 from bot.notifications import notify_credit_error
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-haiku-4-5-20251001"
 
 TOOLS: list[anthropic.types.ToolParam] = [
     {
