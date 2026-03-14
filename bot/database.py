@@ -1,25 +1,11 @@
+import logging
 import os
+import pathlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
 DB_PATH = "data/trader_bro.db"
-
-DDL = """
-CREATE TABLE IF NOT EXISTS decisions (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp           TEXT NOT NULL,
-    product_id          TEXT NOT NULL,
-    decision            TEXT NOT NULL CHECK(decision IN ('BUY','SELL','HOLD')),
-    reason              TEXT NOT NULL,
-    price               REAL NOT NULL,
-    amount_usd          REAL NOT NULL,
-    max_trade_limit_usd REAL NOT NULL,
-    order_id            TEXT,
-    status              TEXT NOT NULL DEFAULT 'pending'
-                        CHECK(status IN ('pending','filled','failed','skipped'))
-);
-"""
 
 
 @contextmanager
@@ -33,10 +19,46 @@ def get_connection():
         conn.close()
 
 
+def _migrations_dir() -> pathlib.Path:
+    return pathlib.Path(__file__).parent / "migrations"
+
+
+def _ensure_migrations_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _applied_versions(conn) -> set:
+    return {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+
+
+def _apply_migration(conn, path: pathlib.Path):
+    sql = path.read_text()
+    for statement in sql.split(";"):
+        statement = statement.strip()
+        if statement:
+            conn.execute(statement)
+    conn.execute(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+        (path.name, datetime.now(timezone.utc).isoformat()),
+    )
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with get_connection() as conn:
-        conn.executescript(DDL)
+        _ensure_migrations_table(conn)
+        applied = _applied_versions(conn)
+        for path in sorted(_migrations_dir().glob("*.sql")):
+            if path.name not in applied:
+                logging.info("Applying migration: %s", path.name)
+                _apply_migration(conn, path)
 
 
 def save_decision(
@@ -48,6 +70,8 @@ def save_decision(
     max_trade_limit_usd: float,
     order_id: str | None,
     status: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> int:
     timestamp = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
@@ -55,11 +79,11 @@ def save_decision(
             """
             INSERT INTO decisions
                 (timestamp, product_id, decision, reason, price, amount_usd,
-                 max_trade_limit_usd, order_id, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_trade_limit_usd, order_id, status, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (timestamp, product_id, decision, reason, price, amount_usd,
-             max_trade_limit_usd, order_id, status),
+             max_trade_limit_usd, order_id, status, input_tokens, output_tokens),
         )
         return cursor.lastrowid
 

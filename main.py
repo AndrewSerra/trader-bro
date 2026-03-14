@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException
 from bot.agent import run_agent_cycle, run_all_cycles
 from bot.database import get_all_decisions, get_decision_by_id, init_db
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("trader_bro")
 
 
@@ -22,7 +23,7 @@ async def _trading_loop():
     while True:
         try:
             results = await loop.run_in_executor(None, run_all_cycles)
-            logger.info("Cycle complete: %s", [r["decision"] for r in results])
+            logger.info("Cycle complete: %s", {r["product_id"]: r["decision"] for r in results if r})
         except Exception:
             logger.exception("Cycle error")
         await asyncio.sleep(interval)
@@ -37,6 +38,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="trader-bro", lifespan=lifespan)
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
 
 
 @app.get("/health")
