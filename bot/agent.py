@@ -86,7 +86,9 @@ TOOLS: list[anthropic.types.ToolParam] = [
     },
 ]
 
-SYSTEM_PROMPT_TEMPLATE = """You are a disciplined crypto trading agent. Your job is to analyze market data and make a single trading decision per cycle.
+_PROMPT_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts", "system_prompt.txt")
+
+_FALLBACK_SYSTEM_PROMPT = """You are a disciplined crypto trading agent. Your job is to analyze market data and make a single trading decision per cycle.
 
 Follow this exact sequence:
 1. Call get_market_data(product_id) to get current prices and 24h candle history
@@ -106,7 +108,13 @@ Rules:
 
 
 def _build_system_prompt(max_trade_usd: float) -> str:
-    return SYSTEM_PROMPT_TEMPLATE.format(max_trade_usd=max_trade_usd)
+    prompt_path = os.environ.get("SYSTEM_PROMPT_FILE", _PROMPT_FILE)
+    try:
+        with open(prompt_path) as f:
+            template = f.read()
+    except OSError:
+        template = _FALLBACK_SYSTEM_PROMPT
+    return template.format(max_trade_usd=max_trade_usd)
 
 
 def _dispatch_tool(
@@ -114,6 +122,8 @@ def _dispatch_tool(
     tool_input: dict,
     max_trade_usd: float,
     final_decision: dict,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> tuple[str, dict]:
     """Dispatch a tool call and return (result_json, updated_final_decision)."""
     if tool_name == "get_market_data":
@@ -146,11 +156,10 @@ def _dispatch_tool(
                 order_id = order_result["order_id"]
                 status = order_result["status"]
             except Exception as exc:
-                status = "failed"
-                reason = f"{reason} [ORDER ERROR: {exc}]"
                 if isinstance(exc, requests.HTTPError) and exc.response is not None:
                     if exc.response.status_code in (401, 402, 429):
                         notify_credit_error("Coinbase", str(exc))
+                return json.dumps({"recorded": False, "status": "failed", "error": str(exc)}), final_decision
 
         elif decision == "SELL":
             try:
@@ -162,11 +171,10 @@ def _dispatch_tool(
                 order_id = order_result["order_id"]
                 status = order_result["status"]
             except Exception as exc:
-                status = "failed"
-                reason = f"{reason} [ORDER ERROR: {exc}]"
                 if isinstance(exc, requests.HTTPError) and exc.response is not None:
                     if exc.response.status_code in (401, 402, 429):
                         notify_credit_error("Coinbase", str(exc))
+                return json.dumps({"recorded": False, "status": "failed", "error": str(exc)}), final_decision
 
         # Fetch price for record (best effort)
         try:
@@ -183,6 +191,8 @@ def _dispatch_tool(
             max_trade_limit_usd=max_trade_usd,
             order_id=order_id,
             status=status,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
         final_decision.update({
@@ -224,6 +234,8 @@ def run_agent_cycle(product_id: str) -> dict:
     ]
 
     final_decision: dict = {}
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     while True:
         try:
@@ -237,10 +249,17 @@ def run_agent_cycle(product_id: str) -> dict:
         except anthropic.RateLimitError as exc:
             notify_credit_error("Anthropic", str(exc))
             raise
+        except anthropic.BadRequestError as exc:
+            if "credit balance" in str(exc).lower():
+                notify_credit_error("Anthropic", str(exc))
+            raise
         except anthropic.APIStatusError as exc:
             if exc.status_code == 402:
                 notify_credit_error("Anthropic", str(exc))
             raise
+
+        total_input_tokens += response.usage.input_tokens
+        total_output_tokens += response.usage.output_tokens
 
         # Append assistant response to message history
         messages.append({"role": "assistant", "content": response.content})
@@ -255,6 +274,8 @@ def run_agent_cycle(product_id: str) -> dict:
                         block.input,
                         max_trade_usd,
                         final_decision,
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens,
                     )
                     tool_results.append({
                         "type": "tool_result",
@@ -287,6 +308,8 @@ def run_agent_cycle(product_id: str) -> dict:
             max_trade_limit_usd=max_trade_usd,
             order_id=None,
             status="failed",
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
         final_decision = {
             "id": record_id,
