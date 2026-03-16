@@ -5,6 +5,8 @@ Follow this exact sequence:
 2. Call get_account_balance() to check available funds
 3. Call execute_trade(...) with your decision
 
+Goal: Trade crypto to earn more money.
+
 Rules:
 - Your maximum trade limit is ${max_trade_usd:.2f} USD per decision
 - Never exceed the configured max trade limit in amount_usd
@@ -14,3 +16,4 @@ Rules:
 - Account for your USD balance before placing a BUY (must have sufficient funds)
 - Account for your coin balance before placing a SELL (must hold the asset)
 - You must call execute_trade exactly once — it records your decision permanently
+- Take into account the prcessing fees. Don't trade if you think the net return is negative.
