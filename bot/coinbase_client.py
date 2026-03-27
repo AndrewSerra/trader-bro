@@ -10,6 +10,8 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 HOST = "api.coinbase.com"
 BASE_URL = f"https://{HOST}"
 
+_product_precision_cache: dict[str, int] = {}
+
 
 def _load_key():
     key_name = os.environ["COINBASE_API_KEY"]
@@ -67,9 +69,9 @@ def fetch_best_bid_ask(product_id: str) -> dict:
     return {"bid": bid, "ask": ask, "mid": (bid + ask) / 2}
 
 
-def fetch_candles(product_id: str, granularity: str = "ONE_HOUR") -> list[dict]:
+def fetch_candles(product_id: str, granularity: str = "FIVE_MINUTE", hours: int = 1) -> list[dict]:
     end = int(time.time())
-    start = end - 24 * 3600
+    start = end - hours * 3600
     data = _get(
         f"/api/v3/brokerage/products/{product_id}/candles",
         params={"start": str(start), "end": str(end), "granularity": granularity},
@@ -87,6 +89,20 @@ def fetch_candles(product_id: str, granularity: str = "ONE_HOUR") -> list[dict]:
     ]
 
 
+def fetch_base_precision(product_id: str) -> int:
+    """Return the number of decimal places allowed for base_size on this product."""
+    if product_id in _product_precision_cache:
+        return _product_precision_cache[product_id]
+    data = _get(f"/api/v3/brokerage/products/{product_id}")
+    increment = data.get("base_increment", "0.00000001")
+    if "." in increment:
+        decimals = len(increment.rstrip("0").split(".")[1])
+    else:
+        decimals = 0
+    _product_precision_cache[product_id] = decimals
+    return decimals
+
+
 def fetch_account_balances() -> list[dict]:
     data = _get("/api/v3/brokerage/accounts")
     balances = []
@@ -97,6 +113,20 @@ def fetch_account_balances() -> list[dict]:
     return balances
 
 
+def _extract_order_result(data: dict) -> dict:
+    import logging
+    success = data.get("success", False)
+    order_id = data.get("order_id") or data.get("success_response", {}).get("order_id")
+    error = None
+    if not success:
+        failure_reason = data.get("failure_reason", "")
+        error_response = data.get("error_response", {})
+        error_detail = error_response.get("message") or error_response.get("error") or ""
+        error = f"{failure_reason}: {error_detail}".strip(": ") or "unknown"
+        logging.error("Coinbase order failed — %s", error)
+    return {"order_id": order_id, "status": "filled" if success else "failed", "error": error}
+
+
 def place_market_buy(product_id: str, quote_size_usd: str) -> dict:
     body = {
         "client_order_id": str(uuid.uuid4()),
@@ -105,9 +135,7 @@ def place_market_buy(product_id: str, quote_size_usd: str) -> dict:
         "order_configuration": {"market_market_ioc": {"quote_size": quote_size_usd}},
     }
     data = _post("/api/v3/brokerage/orders", body)
-    success = data.get("success", False)
-    order_id = data.get("order_id") or data.get("success_response", {}).get("order_id")
-    return {"order_id": order_id, "status": "filled" if success else "failed"}
+    return _extract_order_result(data)
 
 
 def place_market_sell(product_id: str, base_size: str) -> dict:
@@ -118,6 +146,4 @@ def place_market_sell(product_id: str, base_size: str) -> dict:
         "order_configuration": {"market_market_ioc": {"base_size": base_size}},
     }
     data = _post("/api/v3/brokerage/orders", body)
-    success = data.get("success", False)
-    order_id = data.get("order_id") or data.get("success_response", {}).get("order_id")
-    return {"order_id": order_id, "status": "filled" if success else "failed"}
+    return _extract_order_result(data)
