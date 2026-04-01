@@ -94,15 +94,16 @@ def insert_price_target(
     low_target: float,
     high_target: float,
     decision_id: int | None = None,
+    reasoning: str | None = None,
 ) -> int:
     set_at = datetime.now(timezone.utc).isoformat()
     with get_connection() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO price_targets (product_id, low_target, high_target, set_at, decision_id)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO price_targets (product_id, low_target, high_target, set_at, decision_id, reasoning)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (product_id, low_target, high_target, set_at, decision_id),
+            (product_id, low_target, high_target, set_at, decision_id, reasoning),
         )
         return cursor.lastrowid
 

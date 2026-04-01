@@ -103,6 +103,37 @@ def fetch_base_precision(product_id: str) -> int:
     return decimals
 
 
+def fetch_order_book_depth(product_id: str, limit: int = 10) -> dict | None:
+    """
+    Fetch top-of-book depth from Coinbase product_book endpoint.
+
+    Returns bid/ask walls within 1% of mid-price (in USD notional) and
+    the top 3 price levels on each side for the agent to reason about.
+    """
+    try:
+        data = _get("/api/v3/brokerage/product_book", params={"product_id": product_id, "limit": limit})
+        pricebook = data["pricebook"]
+        bids = [(float(b["price"]), float(b["size"])) for b in pricebook.get("bids", [])]
+        asks = [(float(a["price"]), float(a["size"])) for a in pricebook.get("asks", [])]
+        if not bids or not asks:
+            return None
+        mid = (bids[0][0] + asks[0][0]) / 2
+        bid_wall = sum(price * size for price, size in bids if price >= mid * 0.99)
+        ask_wall = sum(price * size for price, size in asks if price <= mid * 1.01)
+        depth_ratio = round(bid_wall / ask_wall, 2) if ask_wall > 0 else None
+        return {
+            "bid_wall_usd": round(bid_wall),
+            "ask_wall_usd": round(ask_wall),
+            "depth_ratio": depth_ratio,  # >1 = more buy pressure, <1 = more sell pressure
+            "top_bids": bids[:3],
+            "top_asks": asks[:3],
+        }
+    except Exception:
+        import logging
+        logging.warning("Failed to fetch order book depth for %s", product_id, exc_info=True)
+        return None
+
+
 def fetch_account_balances() -> list[dict]:
     data = _get("/api/v3/brokerage/accounts")
     balances = []

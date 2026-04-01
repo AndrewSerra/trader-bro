@@ -10,9 +10,11 @@ from bot.coinbase_client import (
     fetch_base_precision,
     fetch_best_bid_ask,
     fetch_candles,
+    fetch_order_book_depth,
     place_market_buy,
     place_market_sell,
 )
+from bot.market_signals import fetch_all_funding_rates, fetch_fear_greed_index
 from bot.database import (
     get_last_successful_trade,
     get_latest_price_target,
@@ -201,6 +203,7 @@ def _dispatch_tool(
             low_target=low_target,
             high_target=high_target,
             decision_id=decision_id,
+            reasoning=reasoning or None,
         )
         if targets_set is not None:
             targets_set.add(product_id)
@@ -367,7 +370,12 @@ def check_and_collect_triggered(product_ids: list[str]) -> list[dict]:
     return triggered
 
 
-def _build_triggered_user_message(triggered: list[dict], balances: list[dict]) -> str:
+def _build_triggered_user_message(
+    triggered: list[dict],
+    balances: list[dict],
+    fear_greed: dict | None = None,
+    funding_rates: dict | None = None,
+) -> str:
     """Build the user message that contains all triggered products' market data."""
     lines = [
         f"The following {len(triggered)} product(s) have triggered their price targets. "
@@ -377,14 +385,70 @@ def _build_triggered_user_message(triggered: list[dict], balances: list[dict]) -
     for b in balances:
         lines.append(f"- {b['currency']}: {b['available']:.8f}")
     lines.append("")
+
+    # --- Market-wide signals ---
+    lines.append("## Market Signals")
+    if fear_greed:
+        val = fear_greed["value"]
+        cls = fear_greed["classification"]
+        context = (
+            "extreme panic/capitulation conditions — high volatility, wider targets appropriate"
+            if val <= 20
+            else "fear conditions — potential accumulation zone"
+            if val <= 40
+            else "greed conditions — watch for reversals, tighten targets"
+            if val >= 60
+            else "extreme greed — elevated reversal risk, reduce position sizes"
+            if val >= 80
+            else "neutral sentiment"
+        )
+        lines.append(f"- Fear & Greed Index: {val}/100 ({cls}) — {context}")
+    else:
+        lines.append("- Fear & Greed Index: unavailable")
+    lines.append("")
+
     for item in triggered:
-        lines.append(f"## {item['product_id']}")
+        product_id = item["product_id"]
+        lines.append(f"## {product_id}")
         lines.append(f"- Current price: {item['current_price']:.6f} (bid: {item['bid']:.6f}, ask: {item['ask']:.6f})")
         if item["low_target"] is not None:
             lines.append(f"- Targets: low={item['low_target']:.6f}, high={item['high_target']:.6f}")
             lines.append(f"- Trigger reason: {item['trigger_reason']}")
         else:
             lines.append("- No prior targets (bootstrap — set initial targets)")
+
+        # Order book depth
+        depth = item.get("order_book_depth")
+        if depth:
+            ratio = depth["depth_ratio"]
+            pressure = (
+                f"buy pressure {ratio:.2f}x" if ratio and ratio > 1
+                else f"sell pressure {1/ratio:.2f}x" if ratio and ratio < 1
+                else "balanced"
+            )
+            lines.append(
+                f"- Order book depth (within 1% of mid): "
+                f"bid wall ${depth['bid_wall_usd']:,} vs ask wall ${depth['ask_wall_usd']:,} ({pressure})"
+            )
+            bid_levels = ", ".join(f"{p:.4f}×{s:.4f}" for p, s in depth["top_bids"])
+            ask_levels = ", ".join(f"{p:.4f}×{s:.4f}" for p, s in depth["top_asks"])
+            lines.append(f"  Top bids: {bid_levels}")
+            lines.append(f"  Top asks: {ask_levels}")
+
+        # Funding rate
+        if funding_rates:
+            fr = funding_rates.get(product_id)
+            if fr:
+                sentiment_label = {
+                    "long_heavy": "longs overextended — pullback risk",
+                    "short_heavy": "shorts overextended — squeeze risk",
+                    "neutral": "balanced positioning",
+                }.get(fr["sentiment"], fr["sentiment"])
+                lines.append(
+                    f"- Binance perp funding rate: {fr['rate']*100:.4f}% "
+                    f"({fr['annualized_pct']:.1f}% annualized) — {sentiment_label}"
+                )
+
         last = item.get("last_trade")
         if last:
             lines.append(
@@ -416,7 +480,14 @@ def run_agent_for_triggered_products(triggered: list[dict]) -> list[dict]:
         logging.exception("Failed to fetch account balances")
         balances = []
 
-    user_message = _build_triggered_user_message(triggered, balances)
+    # Fetch supplementary market signals (best-effort; failures don't block the agent)
+    product_ids = [item["product_id"] for item in triggered]
+    fear_greed = fetch_fear_greed_index()
+    funding_rates = fetch_all_funding_rates(product_ids)
+    for item in triggered:
+        item["order_book_depth"] = fetch_order_book_depth(item["product_id"])
+
+    user_message = _build_triggered_user_message(triggered, balances, fear_greed, funding_rates)
     messages: list[anthropic.types.MessageParam] = [
         {"role": "user", "content": user_message}
     ]
