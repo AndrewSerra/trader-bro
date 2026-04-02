@@ -51,12 +51,6 @@ HOW TRIGGERING WORKS:
 - If you do NOT call set_price_targets for a product, it has no range and the agent fires every single tick
 - You MUST call set_price_targets for every product in this batch before ending your turn
 
-TARGET SETTING RULES:
-- Base targets on key support/resistance levels visible in the candles
-- Typical range: 2-5% above and below current price for volatile assets, 1-3% for stable ones
-- Tighter targets = more frequent triggers = more trading opportunities
-- Reasoning must cite specific price levels and candle patterns observed
-
 LIMITS:
 - Your maximum trade limit is ${max_trade_usd:.2f} USD per decision
 - Never exceed the configured max trade limit in amount_usd
